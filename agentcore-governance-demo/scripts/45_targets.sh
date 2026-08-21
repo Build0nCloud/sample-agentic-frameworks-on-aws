@@ -15,7 +15,10 @@ CRED_CONFIG="$(cat <<JSON
   "credentialProvider":{"iamCredentialProvider":{"service":"bedrock-agentcore","region":"${AWS_REGION}"}}}]
 JSON
 )"
-METADATA_CONFIG='{"allowedRequestHeaders":["x-amzn-bedrock-agentcore-policy-session-id"]}'
+# Note: the policy-session-id header (x-amzn-bedrock-agentcore-policy-session-id)
+# is a client->gateway header consumed by the Cedar policy engine AT the gateway.
+# It is NOT forwarded to targets, and X-Amzn-* headers are prohibited in a target's
+# allowedRequestHeaders, so no metadataConfiguration is needed on the targets.
 
 runtime_endpoint() {
   echo "https://bedrock-agentcore.${AWS_REGION}.amazonaws.com/runtimes/$1/invocations?qualifier=DEFAULT&accountId=${AWS_ACCOUNT_ID}"
@@ -38,15 +41,13 @@ upsert_target() {
     aws bedrock-agentcore-control update-gateway-target --gateway-identifier "$GATEWAY_ID" \
       --target-id "$existing_id" --name "$name" --region "$AWS_REGION" \
       --target-configuration "$target_config" \
-      --credential-provider-configurations "$CRED_CONFIG" \
-      --metadata-configuration "$METADATA_CONFIG" >/dev/null
+      --credential-provider-configurations "$CRED_CONFIG" >/dev/null
   else
     log "[$name] create"
     aws bedrock-agentcore-control create-gateway-target --gateway-identifier "$GATEWAY_ID" \
       --name "$name" --region "$AWS_REGION" --description "$desc" \
       --target-configuration "$target_config" \
-      --credential-provider-configurations "$CRED_CONFIG" \
-      --metadata-configuration "$METADATA_CONFIG" >/dev/null
+      --credential-provider-configurations "$CRED_CONFIG" >/dev/null
   fi
   ok "[$name] ready"
 }

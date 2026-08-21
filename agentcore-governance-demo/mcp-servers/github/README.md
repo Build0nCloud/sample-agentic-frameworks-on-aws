@@ -31,11 +31,11 @@ def my_tool(param: str) -> str:
 
 ## Deploy
 
-Deployment is handled by the parent directory scripts:
+This MCP server is built and deployed as part of the governance demo. From the
+project root:
 
 ```bash
-cd ..
 ./deploy-all.sh
 ```
 
-See the [gateway_mcp README](../README.md) for full deployment instructions.
+See the [project README](../../README.md) for full deployment instructions.

@@ -71,8 +71,14 @@ fi
 
 GATEWAY_ARN="$(echo "$GW" | jq -r '.gatewayArn')"
 GATEWAY_URL_BASE="$(echo "$GW" | jq -r '.gatewayUrl')"
-# MCP calls use the /mcp path.
-GATEWAY_URL="${GATEWAY_URL_BASE%/}/mcp"
+# MCP calls use the /mcp path. The API may already return a URL ending in /mcp,
+# so only append it when it's not already present (avoids a /mcp/mcp path).
+GATEWAY_URL_BASE="${GATEWAY_URL_BASE%/}"
+if [[ "$GATEWAY_URL_BASE" == */mcp ]]; then
+  GATEWAY_URL="$GATEWAY_URL_BASE"
+else
+  GATEWAY_URL="${GATEWAY_URL_BASE}/mcp"
+fi
 
 state_set gateway_id "${GATEWAY_ID}"
 state_set gateway_arn "${GATEWAY_ARN}"

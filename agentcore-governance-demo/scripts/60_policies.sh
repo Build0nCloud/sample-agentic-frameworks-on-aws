@@ -31,7 +31,21 @@ PE_ARN="$(aws bedrock-agentcore-control get-policy-engine --policy-engine-id "$P
   --region "$AWS_REGION" --query policyEngineArn --output text)"
 state_set policy_engine_id "${PE_ID}"
 state_set policy_engine_arn "${PE_ARN}"
-ok "Policy engine ${PE_ID}"
+
+# A freshly-created policy engine is CREATING for a few seconds; CreatePolicy
+# fails with ConflictException until it reaches ACTIVE. Wait for it.
+log "Waiting for policy engine to become ACTIVE"
+for _ in $(seq 1 30); do
+  pe_status="$(aws bedrock-agentcore-control get-policy-engine --policy-engine-id "$PE_ID" \
+    --region "$AWS_REGION" --query status --output text 2>/dev/null || echo CREATING)"
+  case "$pe_status" in
+    ACTIVE) break ;;
+    CREATE_FAILED|FAILED) die "Policy engine $PE_ID entered $pe_status" ;;
+  esac
+  sleep 5
+done
+[[ "$pe_status" == "ACTIVE" ]] || die "Timed out waiting for policy engine $PE_ID to become ACTIVE"
+ok "Policy engine ${PE_ID} (ACTIVE)"
 
 # --- Policies ---------------------------------------------------------------
 # create_policy NAME DESC CEDAR_STATEMENT

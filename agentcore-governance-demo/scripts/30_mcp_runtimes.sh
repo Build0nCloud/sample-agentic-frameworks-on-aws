@@ -93,12 +93,28 @@ deploy_mcp_runtime() {
       ${env_json:+--environment-variables "$env_json"} >/dev/null
   else
     log "[$name] creating runtime"
-    rid="$(aws bedrock-agentcore-control create-agent-runtime --agent-runtime-name "$name" --region "$AWS_REGION" \
-      --agent-runtime-artifact "$artifact" --role-arn "$role_arn" \
-      --network-configuration "$network" --protocol-configuration "$protocol" \
-      --lifecycle-configuration "$lifecycle" \
-      ${env_json:+--environment-variables "$env_json"} \
-      --query agentRuntimeId --output text)"
+    # Newly-created execution roles can take longer than the fixed sleep above to
+    # propagate; AgentCore validates ECR access at create time and returns a
+    # ValidationException until the role is usable. Retry that transient.
+    local attempt create_err
+    for attempt in 1 2 3 4 5 6; do
+      if rid="$(aws bedrock-agentcore-control create-agent-runtime --agent-runtime-name "$name" --region "$AWS_REGION" \
+        --agent-runtime-artifact "$artifact" --role-arn "$role_arn" \
+        --network-configuration "$network" --protocol-configuration "$protocol" \
+        --lifecycle-configuration "$lifecycle" \
+        ${env_json:+--environment-variables "$env_json"} \
+        --query agentRuntimeId --output text 2>/tmp/mcp_create_err)"; then
+        break
+      fi
+      create_err="$(cat /tmp/mcp_create_err)"
+      if echo "$create_err" | grep -q "Access denied while validating ECR URI"; then
+        warn "[$name] role not yet propagated (attempt $attempt) — retrying in 15s"
+        sleep 15
+      else
+        die "[$name] create-agent-runtime failed: $create_err"
+      fi
+    done
+    [[ -n "$rid" && "$rid" != "None" ]] || die "[$name] runtime not created after retries: ${create_err:-unknown error}"
   fi
   wait_runtime_ready "$rid"
   state_set "$state_key" "$rid"
