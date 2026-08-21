@@ -1,0 +1,3 @@
+# Local client dependencies for connect_persona.py and the seed script.
+boto3>=1.34
+bedrock-agentcore>=0.1.0

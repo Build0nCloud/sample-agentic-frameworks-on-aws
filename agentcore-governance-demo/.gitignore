@@ -1,0 +1,14 @@
+# Secrets and generated state — never commit these
+config.env
+.deployed-state.json
+infra.config
+agent.config
+*.pem
+
+# Build artifacts
+mcp-proxy/node_modules/
+interceptor/build/
+interceptor/*.zip
+__pycache__/
+*.pyc
+.venv/
