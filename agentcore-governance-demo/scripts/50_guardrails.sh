@@ -40,7 +40,7 @@ ensure_guardrail() {
     gid="$(aws bedrock create-guardrail --region "$AWS_REGION" --name "$name" --description "$desc" \
       --topic-policy-config "file://$TMP/topic.json" \
       --content-policy-config "file://$TMP/content.json" \
-      "${pii_args[@]}" \
+      "${pii_args[@]+"${pii_args[@]}"}" \
       --blocked-input-messaging "$in_msg" --blocked-outputs-messaging "$out_msg" \
       --query guardrailId --output text)"
   else
@@ -49,7 +49,7 @@ ensure_guardrail() {
       --name "$name" --description "$desc" \
       --topic-policy-config "file://$TMP/topic.json" \
       --content-policy-config "file://$TMP/content.json" \
-      "${pii_args[@]}" \
+      "${pii_args[@]+"${pii_args[@]}"}" \
       --blocked-input-messaging "$in_msg" --blocked-outputs-messaging "$out_msg" >/dev/null
   fi
 
