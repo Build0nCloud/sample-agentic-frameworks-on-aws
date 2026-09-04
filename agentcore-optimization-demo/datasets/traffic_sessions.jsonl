@@ -1,0 +1,30 @@
+{"name": "t01-pto-like-refill", "turns": ["I'm patient PT-1001. What medications am I on?", "Please refill the Lisinopril."]}
+{"name": "t02-schedule-cardio", "turns": ["I'm PT-1001, I need an in-network cardiologist.", "Book the earliest slot on 2026-05-02 and confirm coverage."]}
+{"name": "t03-coverage-mri", "turns": ["I'm PT-1002. Is an MRI covered on my plan?"]}
+{"name": "t04-labs-lipid-a1c", "turns": ["This is PT-1001, pull my lipid panel.", "And my A1C?"]}
+{"name": "t05-policy-billing", "turns": ["Can you explain your billing policy and payment plans?"]}
+{"name": "t06-refill-no-refills", "turns": ["PT-1002 here. Refill my metformin please."]}
+{"name": "t07-derm-appointment", "turns": ["I'm PT-1003. Find me an in-network dermatologist.", "Book it for 2026-05-09 if it's covered."]}
+{"name": "t08-primary-care", "turns": ["I'm PT-1002, who is my primary care provider and is a visit covered?"]}
+{"name": "t09-unknown-patient", "turns": ["I'm PT-8888, list my medications."]}
+{"name": "t10-out-of-network", "turns": ["I'm PT-1001, book me with PRV-202.", "If not in-network, suggest an alternative."]}
+{"name": "t11-policy-cancellation", "turns": ["What's the appointment cancellation policy?"]}
+{"name": "t12-coverage-office-visit", "turns": ["I'm PT-1003. How much is an office visit copay for me?"]}
+{"name": "t13-clinical-decline", "turns": ["I'm PT-1001, should I stop taking my atorvastatin?"]}
+{"name": "t14-labs-a1c-only", "turns": ["I'm PT-1002, show me my A1C result."]}
+{"name": "t15-refill-second-med", "turns": ["PT-1001 here. What am I prescribed?", "Refill the statin."]}
+{"name": "t16-privacy-policy", "turns": ["How do you protect my personal health information?"]}
+{"name": "t17-schedule-primary", "turns": ["I'm PT-1001, I want a primary care visit.", "Confirm coverage then book 2026-06-01."]}
+{"name": "t18-lab-unavailable", "turns": ["I'm PT-1002, can I see my lipid panel?"]}
+{"name": "t19-coverage-specialist", "turns": ["I'm PT-1001, is a specialist visit covered and what's the copay?"]}
+{"name": "t20-emergency-decline", "turns": ["I'm PT-1002.", "I'm having severe chest pain right now, what should I do?"]}
+{"name": "t21-refill-unknown-med", "turns": ["I'm PT-1001, refill my insulin.", "If it's not on file, what do I do?"]}
+{"name": "t22-find-cardiologist-any", "turns": ["I'm PT-1003, list any cardiologists, in or out of network."]}
+{"name": "t23-multi-topic", "turns": ["I'm PT-1001, what meds am I on and is an MRI covered?", "Refill the Lisinopril too."]}
+{"name": "t24-policy-refill", "turns": ["What happens when I run out of refills?"]}
+{"name": "t25-schedule-no-coverage", "turns": ["I'm PT-1003, I need an MRI appointment.", "Is it covered on my plan?"]}
+{"name": "t26-profile-lookup", "turns": ["I'm PT-1002, what plan am I on?"]}
+{"name": "t27-labs-then-question", "turns": ["I'm PT-1001, show my A1C.", "Is that a normal value?"]}
+{"name": "t28-book-derm-oon-check", "turns": ["I'm PT-1001, find an in-network dermatologist and book 2026-06-15 if covered."]}
+{"name": "t29-refill-happy-002", "turns": ["I'm PT-1002, what medications do I have on file?"]}
+{"name": "t30-coverage-lab-panel", "turns": ["I'm PT-1002, is a lab panel covered and what's my share?"]}

@@ -1,0 +1,82 @@
+# AgentCore Optimization Demo — centralized configuration (Requirement 8.1)
+#
+# This is the single source of configurable values for the demo. AWS credentials are
+# NOT configured here: they are resolved via the standard AWS credential chain
+# (environment, shared config/credentials files, SSO, instance/role) (Requirement 8.2).
+#
+# Region precedence: AWS_REGION / AWS_DEFAULT_REGION env var > this file > default.
+
+aws:
+  region: us-east-1
+
+agent:
+  # Runtime resource names (letters/numbers/underscores; no hyphens).
+  runtime_name: PatientSupport
+  runtime_v2_name: PatientSupportV2          # code-changed variant for target-based A/B tests
+  gateway_name: PatientSupportGateway
+  # Foundation model the agent runs on (must be enabled in your region).
+  # Claude Sonnet 5 US cross-region inference profile (base id: anthropic.claude-sonnet-5).
+  model_id: us.anthropic.claude-sonnet-5
+
+  # DEMO SCENARIO (Phase 1): a deliberately weak control/baseline prompt so the
+  # recommended treatment has real headroom to win on GoalSuccessRate. The control
+  # bundle uses this prompt; the treatment uses the improved (recommended/strong) prompt.
+  # Remove or null this out for the agent's normal (strong) behavior.
+  baseline_system_prompt: >
+    You are a general assistant for a health clinic. Answer patient questions briefly
+    from general knowledge. Do not call any tools and do not look up records, accounts,
+    medications, coverage, or lab results. Keep replies to one or two short sentences and
+    do not ask the patient for identifiers. If unsure, give your best general guess.
+
+# Evaluators applied by offline and online evaluation (built-ins from AgentCore).
+# Custom evaluators (tool-call, trajectory, clinical-safety) are added in code.
+evaluators:
+  - Builtin.GoalSuccessRate
+  - Builtin.Helpfulness
+  - Builtin.Correctness
+
+datasets:
+  # Paths are relative to the repo root (absolute paths are also accepted).
+  offline: datasets/offline_multiturn.jsonl
+  traffic: datasets/traffic_sessions.jsonl
+
+online_eval:
+  # Percentage of sessions scored by online evaluation (0-100).
+  sampling_percentage: 100
+
+ab_testing:
+  # Config-bundle A/B test split (same runtime, two bundle versions).
+  control_weight: 50
+  treatment_weight: 50
+  # Target-based canary split (two runtimes / gateway targets).
+  canary_control_weight: 90
+  canary_treatment_weight: 10
+
+# Phase 2: include the custom code-based trajectory evaluator in the A/B online
+# evaluation so the A/B scores the tool-trajectory dimension (deploys a Lambda).
+enable_trajectory_evaluator: true
+
+# Where generated artifacts are written (baselines, bundles, reports, approvals, audit).
+artifacts_dir: artifacts
+
+# Web UI settings.
+ui:
+  # Timezone used to display timestamps in the UI, shown alongside UTC. Stored
+  # timestamps are always UTC; this only affects display. Use an IANA name
+  # (e.g. America/Chicago, America/New_York, Europe/London, UTC) or "local" to use
+  # the machine's local timezone.
+  display_timezone: local
+
+# Report email settings (Requirements 2.11, 2.12, 8.6). OPTIONAL.
+# delivery: outbox | ses | smtp
+#   outbox (default) — write the rendered report to artifacts/outbox/ (no email sent)
+#   ses              — send via Amazon SES (uses the AWS credential chain)
+#   smtp             — send via SMTP; credentials come from SMTP_USERNAME / SMTP_PASSWORD
+#                      environment variables (never stored in this file)
+email:
+  delivery: ses           # send the offline-eval report via Amazon SES
+  target: rcsmith329@gmail.com
+  sender: rcsmith329@gmail.com
+  smtp_host: null
+  smtp_port: 587
+  smtp_use_tls: true

@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentcore-optimization-demo"
+version = "0.1.0"
+description = "End-to-end demo of the Amazon Bedrock AgentCore optimization loop (offline + online evaluation, configuration bundles, A/B testing, and promotion with human approval) for a healthcare patient-support agent."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT-0" }
+
+# Runtime dependencies. The demo always runs against real Amazon Bedrock AgentCore.
+dependencies = [
+    "boto3>=1.35.0",          # AWS SDK: bedrock-agentcore (DP) + bedrock-agentcore-control (CP), logs, iam, s3, ses
+    "bedrock-agentcore",      # AgentCore runtime SDK (BedrockAgentCoreApp, config-bundle hook)
+    "strands-agents",         # Strands agent framework used by the sample agent
+    "PyYAML>=6.0",            # config/demo_config.yaml
+    "requests>=2.31.0",       # SigV4-signed gateway invocation (adapted from the sample)
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "hypothesis>=6.100",      # property-based testing for the design's Correctness Properties (P1-P10)
+]
+# Optional Streamlit front end for human approval + results visualization.
+ui = [
+    "streamlit>=1.30",        # web UI over the artifacts/ tree + PromotionGate approve/reject
+]
+
+[project.scripts]
+# Single documented entry point for the demo CLI (implemented in a later task).
+demo = "agentcore_demo.demo:main"
+# Launch the Streamlit front end (requires the optional `ui` extra: pip install -e ".[ui]").
+demo-ui = "agentcore_demo.ui.launch:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    # Opt-in marker for the live end-to-end smoke test that touches REAL AgentCore
+    # and tears down via the sample's cleanup.py. Never runs by default.
+    "live: end-to-end test against real AWS AgentCore (opt-in; excluded from default runs)",
+]
+# Exclude live tests unless explicitly requested with `-m live`.
+addopts = "-m 'not live'"

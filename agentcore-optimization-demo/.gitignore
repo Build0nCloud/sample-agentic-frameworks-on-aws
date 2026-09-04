@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.env
+
+# Test / tooling caches
+.pytest_cache/
+.hypothesis/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Demo runtime outputs (generated artifacts; keep the directory, ignore contents)
+artifacts/*
+!artifacts/.gitkeep
+
+# Local state files written by the sample-adapted deploy logic
+agent_state_*.json
+
+# Slide decks + their generator (built locally, not part of the repo deliverable)
+*.pptx
+~$*.pptx
+scripts/make_slides.py
+
+# Vendored, read-only AWS sample (19M) — re-fetch with scripts/fetch_reference.sh
+reference/
+
+# Kiro IDE working files (project spec: requirements/design/tasks)
+.kiro/
