@@ -35,7 +35,7 @@ class RecommendationService:
         self.name_prefix = name_prefix
         self.lookback_days = lookback_days
 
-    def recommend_system_prompt(self, current_prompt: str, target_evaluator: str = "Builtin.GoalSuccessRate", wait: bool = True) -> Recommendation:
+    def recommend_system_prompt(self, current_prompt: str, target_evaluator: str = "Builtin.GoalSuccessRate", wait: bool = True, on_poll=None) -> Recommendation:
         req = RecommendationRequest(
             name=f"{self.name_prefix}Sp",
             kind="system_prompt",
@@ -45,7 +45,7 @@ class RecommendationService:
             target_evaluator_arn=builtin_arn(target_evaluator),
             lookback_days=self.lookback_days,
         )
-        return self.client.start_recommendation(req, wait=wait)
+        return self.client.start_recommendation(req, wait=wait, on_poll=on_poll)
 
     def recommend_tool_descriptions(self, current_descriptions: dict[str, str], wait: bool = True) -> Recommendation:
         req = RecommendationRequest(

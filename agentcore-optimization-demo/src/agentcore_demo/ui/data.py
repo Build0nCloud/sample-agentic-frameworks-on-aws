@@ -251,6 +251,91 @@ class DemoData:
     def draft_sides(self) -> tuple[str, ...]:
         return tuple(DRAFT_SIDES)
 
+    # --- offline evaluation dataset (ground-truth cases) ------------------
+    def offline_dataset_path(self) -> str:
+        return str(getattr(self.config, "offline_dataset", ""))
+
+    def offline_cases(self) -> list[dict[str, Any]]:
+        """Load the offline evaluation dataset as plain dicts for display.
+
+        Each item: {case_id, turns[list[str]], ground_truth{expected_response,
+        assertions[list[str]], expected_trajectory[list[str]|None]}}.
+        Returns [] if the dataset is missing or unreadable.
+        """
+        from ..evaluation.offline import load_cases
+
+        path = getattr(self.config, "offline_dataset", None)
+        if not path:
+            return []
+        try:
+            cases = load_cases(path)
+        except (FileNotFoundError, ValueError, OSError):
+            return []
+        out: list[dict[str, Any]] = []
+        for c in cases:
+            gt = c.ground_truth
+            out.append(
+                {
+                    "case_id": c.case_id,
+                    "turns": list(c.turns),
+                    "expected_response": (gt.expected_response if gt else None),
+                    "assertions": (list(gt.assertions) if gt else []),
+                    "expected_trajectory": (list(gt.expected_trajectory) if (gt and gt.expected_trajectory) else []),
+                }
+            )
+        return out
+
+    def dataset_raw_sample(self, which: str, *, pretty: bool = True) -> str | None:
+        """Return the first non-empty raw line of a dataset file (``which`` = offline|traffic).
+
+        Used to show the on-disk JSONL format as a copyable template. If ``pretty``, the
+        line is re-formatted as indented JSON; otherwise the raw line is returned as-is.
+        """
+        import json as _json
+        from pathlib import Path as _Path
+
+        attr = "offline_dataset" if which == "offline" else "traffic_dataset"
+        path = getattr(self.config, attr, None)
+        if not path:
+            return None
+        p = _Path(path)
+        if not p.exists():
+            return None
+        for line in p.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if not pretty:
+                return line
+            try:
+                return _json.dumps(_json.loads(line), indent=2)
+            except _json.JSONDecodeError:
+                return line
+        return None
+
+    def traffic_dataset_path(self) -> str:
+        return str(getattr(self.config, "traffic_dataset", ""))
+
+    def traffic_sessions(self) -> list[dict[str, Any]]:
+        """Load the online/A-B traffic dataset as plain dicts for display.
+
+        Each item: {name, turns[list[str]]}. No ground truth (online/A-B is scored by
+        built-in judges + the trajectory Lambda). Returns [] if missing/unreadable.
+        """
+        from ..evaluation.online import load_traffic
+
+        path = getattr(self.config, "traffic_dataset", None)
+        if not path:
+            return []
+        try:
+            sessions = load_traffic(path)
+        except (FileNotFoundError, ValueError, OSError):
+            return []
+        return [
+            {"name": s.get("name") or f"session {i}", "turns": list(s.get("turns", []))}
+            for i, s in enumerate(sessions, start=1)
+        ]
+
     def baseline_prompt(self) -> str | None:
         """The configured (deliberately weak) control/baseline system prompt, if any.
 

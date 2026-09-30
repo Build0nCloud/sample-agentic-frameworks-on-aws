@@ -1,3 +1,6 @@
+# macOS
+.DS_Store
+
 # Python
 __pycache__/
 *.py[cod]
@@ -27,6 +30,13 @@ agent_state_*.json
 *.pptx
 ~$*.pptx
 scripts/make_slides.py
+
+# Presenter docs that embed a specific account id / this-run resource ids / a local
+# machine path — kept local, out of the account-agnostic public repo. (QUICKSTART.md,
+# README.md, ARCHITECTURE.md, and MANUAL_DEPLOYMENT.md are the agnostic, committed docs.)
+demo-talk-track.md
+demo-talk-track.html
+DEMO_CHEATSHEET.md
 
 # Vendored, read-only AWS sample (19M) — re-fetch with scripts/fetch_reference.sh
 reference/

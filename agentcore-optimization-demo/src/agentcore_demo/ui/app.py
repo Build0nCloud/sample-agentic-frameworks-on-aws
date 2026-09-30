@@ -582,6 +582,111 @@ def _render_chat_tools(turn_index: int, session_id: str | None) -> None:
         )
 
 
+def render_dataset(data: DemoData) -> None:
+    st.subheader("Evaluation datasets")
+    st.caption(
+        "The inputs the evaluation stages run against. **Offline** cases carry ground truth "
+        "(expected tool trajectory + assertions) and drive offline-baseline / offline-check. "
+        "**Traffic** sessions have no ground truth and drive the online + A/B stages."
+    )
+    tab_offline, tab_traffic = st.tabs(["Offline (ground-truth cases)", "Traffic (online / A-B)"])
+    with tab_offline:
+        _render_offline_dataset(data)
+    with tab_traffic:
+        _render_traffic_dataset(data)
+
+
+def _render_offline_dataset(data: DemoData) -> None:
+    cases = data.offline_cases()
+    if not cases:
+        st.info(f"No offline dataset found at `{data.offline_dataset_path()}`.")
+        return
+
+    all_tools: list[str] = []
+    for c in cases:
+        all_tools.extend(c["expected_trajectory"])
+    top = st.columns(3)
+    top[0].metric("Cases", len(cases))
+    top[1].metric("Total turns", sum(len(c["turns"]) for c in cases))
+    top[2].metric("Distinct tools", len(set(all_tools)))
+    st.caption(f"Source: `{data.offline_dataset_path()}`  ·  scored by offline-baseline & offline-check")
+
+    with st.expander("📄 File format (JSONL) — how to build this file"):
+        st.markdown(
+            "**JSON Lines**: one JSON object per line, one line per case. Each case:\n"
+            "- `case_id` (str) — unique id for the case.\n"
+            "- `turns` (list of str) — the ordered user messages; one entry per turn (multi-turn supported).\n"
+            "- `ground_truth` (object):\n"
+            "    - `expected_response` (str or null) — optional reference answer.\n"
+            "    - `assertions` (list of str) — statements a good answer must satisfy.\n"
+            "    - `expected_trajectory` (list of str or null) — the exact ordered tool names the agent "
+            "should call; drives the `Custom.ToolCall` and `Custom.Trajectory` evaluators."
+        )
+        sample = data.dataset_raw_sample("offline")
+        if sample:
+            st.markdown("**Example (one line from the file, pretty-printed):**")
+            st.code(sample, language="json")
+            st.caption("On disk this is a single line (no line breaks). Add one line per case.")
+
+    for c in cases:
+        traj = c["expected_trajectory"]
+        header = f"**{c['case_id']}**  ·  {len(c['turns'])} turn(s)"
+        if traj:
+            header += f"  ·  {len(traj)} tool(s)"
+        with st.expander(header):
+            st.markdown("**Conversation**")
+            for i, turn in enumerate(c["turns"], start=1):
+                st.markdown(f"**Turn {i} — patient:**")
+                st.markdown(f"> {turn}")
+
+            st.markdown("**Expected tool trajectory**")
+            if traj:
+                st.markdown("  ".join(f"`{t}`" + ("  →" if i < len(traj) - 1 else "") for i, t in enumerate(traj)))
+            else:
+                st.caption("_No expected trajectory (this case doesn't require tools)._")
+
+            if c["assertions"]:
+                st.markdown("**Assertions (what a good answer must satisfy)**")
+                for a in c["assertions"]:
+                    st.markdown(f"- {a}")
+            if c["expected_response"]:
+                st.markdown("**Expected response**")
+                st.markdown(f"> {c['expected_response']}")
+
+
+def _render_traffic_dataset(data: DemoData) -> None:
+    sessions = data.traffic_sessions()
+    if not sessions:
+        st.info(f"No traffic dataset found at `{data.traffic_dataset_path()}`.")
+        return
+
+    top = st.columns(2)
+    top[0].metric("Sessions", len(sessions))
+    top[1].metric("Total turns", sum(len(s["turns"]) for s in sessions))
+    st.caption(f"Source: `{data.traffic_dataset_path()}`  ·  driven at the agent by the online & ab-test stages")
+    st.caption("No ground truth — these are scored by the built-in judges and the custom trajectory evaluator.")
+
+    with st.expander("📄 File format (JSONL) — how to build this file"):
+        st.markdown(
+            "**JSON Lines**: one JSON object per line, one line per session. Each session:\n"
+            "- `name` (str) — a label for the session (shown in results/trajectories).\n"
+            "- `turns` (list of str) — the ordered user messages; one entry per turn.\n\n"
+            "No `ground_truth` here — online / A-B traffic is scored by the built-in evaluators and the "
+            "custom trajectory evaluator, not against expected answers."
+        )
+        sample = data.dataset_raw_sample("traffic")
+        if sample:
+            st.markdown("**Example (one line from the file, pretty-printed):**")
+            st.code(sample, language="json")
+            st.caption("On disk this is a single line (no line breaks). Add one line per session.")
+
+    for s in sessions:
+        with st.expander(f"**{s['name']}**  ·  {len(s['turns'])} turn(s)"):
+            for i, turn in enumerate(s["turns"], start=1):
+                st.markdown(f"**Turn {i} — patient:**")
+                st.markdown(f"> {turn}")
+
+
 def render_online(data: DemoData) -> None:
     st.subheader("Online evaluation")
     st.caption(
@@ -669,7 +774,10 @@ def render_recommendation(data: DemoData) -> None:
         )
         return
 
-    st.write(f"**Kind:** `{rec.get('kind', 'system_prompt')}`")
+    target = rec.get("target_evaluator")
+    if target:
+        st.markdown(f"**Target metric:** `{target}` — the recommendation was optimized to improve "
+                    f"this metric from production traces.")
 
     before = data.baseline_prompt()
     after = rec.get("recommended_system_prompt")
@@ -960,7 +1068,14 @@ def _render_raw_html(data: DemoData, name: str) -> None:
     if not html:
         return
     with st.expander("Rendered HTML report (as emailed)"):
-        st_components.html(html, height=320, scrolling=True)
+        # The report HTML has no CSS of its own, so on the app's dark theme it renders as
+        # black text on a dark iframe. Wrap it in a light "page" so it's legible regardless
+        # of theme (this is how it would look in an email client).
+        framed = (
+            "<div style=\"background:#ffffff;color:#111111;padding:16px;border-radius:8px;"
+            "font-family:Arial,Helvetica,sans-serif;\">" + html + "</div>"
+        )
+        st_components.html(framed, height=340, scrolling=True)
 
 
 def render_sidebar(data: DemoData) -> None:
@@ -1007,12 +1122,13 @@ def main() -> None:
         [
             "🚀 Run demo",
             "💬 Chat",
+            "📚 Dataset",
+            "📋 Reports",
             "📡 Online",
             "💡 Recommendation",
             "🧾 Bundles",
             "🧪 Candidate",
             "📊 A/B Results",
-            "📋 Reports",
             "✅ Approvals",
             "📜 Audit trail",
         ]
@@ -1022,20 +1138,22 @@ def main() -> None:
     with tabs[1]:
         render_chat(data)
     with tabs[2]:
-        render_online(data)
+        render_dataset(data)
     with tabs[3]:
-        render_recommendation(data)
-    with tabs[4]:
-        render_bundles(data)
-    with tabs[5]:
-        render_candidate(data)
-    with tabs[6]:
-        render_results(data)
-    with tabs[7]:
         render_reports(data)
+    with tabs[4]:
+        render_online(data)
+    with tabs[5]:
+        render_recommendation(data)
+    with tabs[6]:
+        render_bundles(data)
+    with tabs[7]:
+        render_candidate(data)
     with tabs[8]:
-        render_approvals(data)
+        render_results(data)
     with tabs[9]:
+        render_approvals(data)
+    with tabs[10]:
         render_audit(data)
 
 

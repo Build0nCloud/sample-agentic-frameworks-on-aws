@@ -344,7 +344,7 @@ def build_stages(context: StageContext) -> list[Stage]:
     from .agent.patient_support_agent import DEFAULT_SYSTEM_PROMPT, DEFAULT_TOOL_DESCRIPTIONS
     from .agentcore_client import BundleRef, OnlineEvalConfig, PromotionDecision
     from .evaluation.offline import load_cases, make_client_runner, run_offline_evaluation
-    from .evaluation.online import OnlineEvaluation, drive_traffic, load_traffic
+    from .evaluation.online import OnlineEvaluation, load_traffic
     from .models import BundleConfig
     from .optimization.abtest import ABTestRunner
     from .optimization.bundles import BundleManager, offline_check_bundle
@@ -427,6 +427,8 @@ def build_stages(context: StageContext) -> list[Stage]:
 
     # -- online evaluation + traffic ------------------------------------
     def online(ctx: StageContext) -> StageOutcome:
+        import uuid as _uuid2
+
         oe = OnlineEvaluation(
             ctx.client,
             OnlineEvalConfig(
@@ -434,10 +436,27 @@ def build_stages(context: StageContext) -> list[Stage]:
                 evaluators=cfg.evaluators, role_arn=ctx.agent.role_arn, sampling_percentage=cfg.sampling_percentage,
             ),
         )
+        ctx.emit(f"    creating online-evaluation config (sampling {cfg.sampling_percentage:.0f}%, "
+                 f"evaluators: {', '.join(cfg.evaluators)})…")
         handle = oe.start()
+        ctx.emit(f"    online eval active: {getattr(handle, 'name', '') or getattr(handle, 'config_id', '')}")
+
         sessions = load_traffic(cfg.traffic_dataset)
-        results = drive_traffic(ctx.client, ctx.agent, sessions, loops=1)
         ctx.bag["online_eval"] = oe
+
+        # Drive traffic inline (instead of drive_traffic) so we can emit per-session
+        # progress — this is the longest part of the stage and otherwise looks frozen.
+        total = len(sessions)
+        ctx.emit(f"    driving {total} multi-turn session(s) against the live agent…")
+        results = []
+        for i, spec in enumerate(sessions, start=1):
+            name = spec.get("name") or f"session {i}"
+            turns = spec["turns"]
+            sid = str(_uuid2.uuid4())
+            r = ctx.client.send_session(ctx.agent, turns, session_id=sid)
+            results.append(r)
+            ctx.emit(f"    [{i}/{total}] {name}: {len(turns)} turn(s) sent  (session {sid[:8]}…)")
+        ctx.emit(f"    ✓ drove {len(results)} session(s); the online evaluator scores them asynchronously")
 
         session_ids = [r.session_id for r in results]
         # Score the driven traffic (built-in evaluators) and reconstruct per-session tool
@@ -449,16 +468,20 @@ def build_stages(context: StageContext) -> list[Stage]:
         try:
             if session_ids:
                 if ingestion_wait > 0:
-                    ctx.emit(f"    waiting {int(ingestion_wait)}s for trace/log ingestion before scoring…")
+                    ctx.emit(f"    waiting {int(ingestion_wait)}s for CloudWatch trace/log ingestion before scoring…")
                     _time.sleep(ingestion_wait)
+                    ctx.emit("    ingestion wait complete; reconstructing per-session tool trajectories…")
                 resolve = _resolver(ctx)
-                for r in results:
+                for i, r in enumerate(results, start=1):
                     tools = list(r.tool_calls) or resolve(r.session_id)
                     session_details.append({"session_id": r.session_id, "tool_calls": tools})
+                    ctx.emit(f"    [{i}/{total}] tools: {' → '.join(tools) if tools else '(none reconstructed yet)'}")
+                ctx.emit(f"    running batch scoring over {len(session_ids)} session(s) "
+                         f"(evaluators: {', '.join(cfg.evaluators)})…")
                 scores = _batch_scorer(ctx)(session_ids)
-                ctx.emit(f"    online scores: {scores}")
+                ctx.emit(f"    ✓ online scores: {scores}")
         except Exception as exc:  # noqa: BLE001 - scoring is best-effort (async aggregation)
-            ctx.emit(f"    online scoring incomplete (will show as pending): {exc}")
+            ctx.emit(f"    online scoring incomplete (will show as pending; refresh later): {exc}")
 
         save_loop_state(
             ctx.store,
@@ -473,7 +496,8 @@ def build_stages(context: StageContext) -> list[Stage]:
                 "generated_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
             },
         )
-        return StageOutcome(note=f"online eval started; drove {len(results)} sessions")
+        scored = "scored" if scores else "pending async aggregation"
+        return StageOutcome(note=f"online eval started; drove {len(results)} sessions ({scored})")
 
     # The control/baseline prompt: a deliberately weak one when configured (demo
     # scenario), else the agent's normal strong prompt.
@@ -482,8 +506,21 @@ def build_stages(context: StageContext) -> list[Stage]:
     # -- recommendation --------------------------------------------------
     def recommend(ctx: StageContext) -> StageOutcome:
         svc = RecommendationService(ctx.client, log_group_arns=[_log_group_arn(ctx.agent)], service_names=[ctx.agent.service_name], name_prefix=f"PatientRec{sfx}")
-        rec = svc.recommend_system_prompt(baseline_prompt, target_evaluator="Builtin.GoalSuccessRate")
-        change = present_change(rec, current_system_prompt=baseline_prompt, target_evaluator="Builtin.GoalSuccessRate")
+        target_evaluator = "Builtin.GoalSuccessRate"
+        ctx.emit(f"    starting recommendation job: analyzing production traces to improve the "
+                 f"system prompt for {target_evaluator}…")
+        ctx.emit("    (this is a server-side LLM analysis over the trace window — it can take "
+                 "several minutes; polling every ~30s)")
+
+        _t0 = _time.time()
+
+        def _on_poll(attempt: int, max_attempts: int, status: str) -> None:
+            elapsed = int(_time.time() - _t0)
+            st = status or "IN_PROGRESS"
+            ctx.emit(f"    poll {attempt}: status={st} (elapsed {elapsed}s)")
+
+        rec = svc.recommend_system_prompt(baseline_prompt, target_evaluator=target_evaluator, on_poll=_on_poll)
+        change = present_change(rec, current_system_prompt=baseline_prompt, target_evaluator=target_evaluator)
         ctx.bag["recommendation"] = rec
         save_loop_state(
             ctx.store,
@@ -491,9 +528,16 @@ def build_stages(context: StageContext) -> list[Stage]:
                 "kind": rec.kind,
                 "recommended_system_prompt": rec.recommended_system_prompt,
                 "recommended_tool_descriptions": rec.recommended_tool_descriptions,
+                "target_evaluator": target_evaluator,
             },
         )
-        ctx.emit(f"    recommendation: {change['explanation']}")
+        if change.get("changed"):
+            preview = (rec.recommended_system_prompt or "").strip().replace("\n", " ")
+            ctx.emit(f"    ✓ recommendation ready: {change['explanation']}")
+            if preview:
+                ctx.emit(f"    proposed prompt (preview): {preview[:160]}{'…' if len(preview) > 160 else ''}")
+        else:
+            ctx.emit(f"    recommendation returned no change: {change['explanation']}")
         return StageOutcome(note=("changed" if change.get("changed") else "no change"))
 
     def _recommendation(ctx: StageContext):

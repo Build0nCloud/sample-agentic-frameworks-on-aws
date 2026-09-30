@@ -561,9 +561,23 @@ class AgentCoreClient:
             "result": result,
         }
 
-    def _poll(self, fn: Callable[[], dict[str, Any]], terminal: frozenset[str], poll_seconds: int, max_polls: int = 120) -> dict[str, Any]:
-        for _ in range(max_polls):
+    def _poll(
+        self,
+        fn: Callable[[], dict[str, Any]],
+        terminal: frozenset[str],
+        poll_seconds: int,
+        max_polls: int = 120,
+        on_poll: Callable[[int, int, str], None] | None = None,
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for i in range(max_polls):
             result = self._retry(fn)
+            status = str(result.get("status") or "")
+            if on_poll is not None:
+                try:
+                    on_poll(i + 1, max_polls, status)
+                except Exception:  # noqa: BLE001 - progress reporting must never break polling
+                    pass
             if result.get("status") in terminal:
                 return result
             self._sleep(poll_seconds)
@@ -623,7 +637,7 @@ class AgentCoreClient:
     # =======================================================================
     # Recommendations + bundles (task 5.2)
     # =======================================================================
-    def start_recommendation(self, req: RecommendationRequest, wait: bool = True, poll_seconds: int = 30) -> Recommendation:
+    def start_recommendation(self, req: RecommendationRequest, wait: bool = True, poll_seconds: int = 30, on_poll: Callable[[int, int, str], None] | None = None) -> Recommendation:
         from datetime import datetime, timedelta, timezone
 
         now = datetime.now(timezone.utc)
@@ -651,7 +665,7 @@ class AgentCoreClient:
         if not wait:
             return Recommendation(kind=req.kind, raw={"recommendationId": rec_id})
 
-        result = self._poll(lambda: self.dp.get_recommendation(recommendationId=rec_id), REC_TERMINAL, poll_seconds)
+        result = self._poll(lambda: self.dp.get_recommendation(recommendationId=rec_id), REC_TERMINAL, poll_seconds, on_poll=on_poll)
         if req.kind == "system_prompt":
             return parse_system_prompt_recommendation(result, req.current_system_prompt)
         return parse_tool_description_recommendation(result, req.current_tool_descriptions or {})

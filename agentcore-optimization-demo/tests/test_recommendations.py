@@ -15,8 +15,9 @@ class FakeRecClient:
         self.rec = rec
         self.requests = []
 
-    def start_recommendation(self, req, wait=True):
+    def start_recommendation(self, req, wait=True, on_poll=None):
         self.requests.append((req, wait))
+        self.on_poll = on_poll
         return self.rec
 
 
@@ -39,6 +40,14 @@ def test_recommend_system_prompt_builds_request():
     assert req.current_system_prompt == "current prompt"
     assert req.target_evaluator_arn.endswith("Builtin.GoalSuccessRate")
     assert req.service_names == ["PatientSupport.DEFAULT"]
+
+
+def test_recommend_system_prompt_threads_on_poll_callback():
+    rec = Recommendation(kind="system_prompt", recommended_system_prompt="better")
+    svc, client = _service(rec)
+    cb = lambda attempt, total, status: None
+    svc.recommend_system_prompt("current prompt", on_poll=cb)
+    assert client.on_poll is cb  # progress callback is passed straight through
 
 
 def test_recommend_tool_descriptions_builds_request():
