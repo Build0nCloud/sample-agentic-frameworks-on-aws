@@ -1,0 +1,21 @@
+{
+  // Devin CLI user config (baked into the image at ~/.config/devin/config.json).
+  // The MCP gateway server is generated at startup by run.sh into
+  // ~/.config/devin/mcp_config.json from the GATEWAY_URL runtime env var.
+  //
+  // Pre-approve the governed gateway tools so headless runs don't prompt. Tool
+  // access is still enforced at the gateway by Cedar; these permissions only
+  // control local approval prompts.
+  "theme_mode": "dark",
+  "permissions": {
+    "allow": [
+      "mcp__gateway__*"
+    ],
+    "deny": [
+      "mcp__gateway__GitHubMCP___set_labels",
+      "mcp__gateway__GitHubMCP___remove_label",
+      "mcp__gateway__GitHubMCP___assign_issue",
+      "mcp__gateway__GitHubMCP___update_comment"
+    ]
+  }
+}

@@ -31,6 +31,21 @@ ok "TAVILY_API_KEY set"
   || die "GITHUB_APP_PRIVATE_KEY_FILE not set or file not found in config.env."
 ok "GitHub App credentials present"
 
+log "Coding agents (AGENTS)"
+[[ "${#AGENTS[@]}" -gt 0 ]] || die "AGENTS is empty. Set AGENTS in config.env (e.g. AGENTS=\"claude-code\")."
+for agent in "${AGENTS[@]}"; do
+  slug="$(agent_normalize_slug "$agent")"
+  build_dir="$(agent_build_dir "$slug")"
+  [[ -f "${build_dir}/Dockerfile" ]] \
+    || die "Agent '${slug}' has no Dockerfile at ${build_dir}. Check AGENTS in config.env."
+  key_var="$(agent_key_env_var "$slug")"
+  if [[ -n "$key_var" ]]; then
+    [[ -n "${!key_var:-}" ]] \
+      || die "Agent '${slug}' is enabled but ${key_var} is not set in config.env (needed to create its Secrets Manager secret)."
+  fi
+done
+ok "Agents to deploy: ${AGENTS[*]}"
+
 log "Bedrock model access (informational)"
 if aws bedrock list-foundation-models --region "$AWS_REGION" \
       --query "modelSummaries[?contains(modelId,'claude')] | length(@)" --output text >/dev/null 2>&1; then

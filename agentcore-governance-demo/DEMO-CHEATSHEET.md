@@ -3,33 +3,71 @@
 ## 1. Environment Setup (run once per shell)
 
 ```bash
-# Go to project root
-cd /Users/smithzgg/GitHub/agentcore-samples/01-features/02-host-your-agent/01-runtime/04-coding-agents/03-code-agents-competition-e2e
+# Go to the demo project root (all scripts live here: warm-personas.sh,
+# verify-governance.sh, connect_persona.py, deploy-all.sh, ...)
+cd /Users/smithzgg/GitHub/sample-agentic-frameworks-on-aws/agentcore-governance-demo
 
-# Activate Python environment
+# Activate the Python environment (create once: uv venv && uv pip install -r requirements.txt)
 source .venv/bin/activate
 
-# Refresh AWS credentials — paste your Isengard export lines, then persist:
-aws configure set aws_access_key_id $AWS_ACCESS_KEY_ID
-aws configure set aws_secret_access_key $AWS_SECRET_ACCESS_KEY
-aws configure set aws_session_token $AWS_SESSION_TOKEN
+# Refresh AWS credentials — paste your fresh Isengard export lines, then persist to the file:
+aws configure set aws_access_key_id "$AWS_ACCESS_KEY_ID"
+aws configure set aws_secret_access_key "$AWS_SECRET_ACCESS_KEY"
+aws configure set aws_session_token "$AWS_SESSION_TOKEN"
 
 # Verify auth (should show account 211395677819)
 aws sts get-caller-identity
-
-# Move into the demo folder
-cd coding_agents/claude-code
 ```
+
+> **Credential gotcha:** if `aws configure list` shows the access key `TYPE` as
+> `env`, stale `AWS_*` environment variables are overriding the file above and
+> `aws configure set` has no effect. Either export fresh values, or clear them
+> (`unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN`) so the
+> refreshed `~/.aws/credentials` is used. `warm-personas.sh` and
+> `verify-governance.sh` already clear them for you.
+
+## Choosing the coding agent (optional `--agent`)
+
+Every command below optionally takes `--agent <name>` to pick which coding agent
+runs inside the persona runtime. **If you omit it, the default is Claude Code.**
+The governance outcome is identical no matter which agent you choose — Cedar and
+the guardrails are enforced at the gateway on the persona's IAM identity, not by
+the agent.
+
+Currently supported agents:
+
+| `--agent` value | Coding agent | Inference | Notes |
+|-----------------|--------------|-----------|-------|
+| `claude-code` (default) | **Claude** (Claude Code) | Amazon Bedrock (runtime IAM role) | Used if `--agent` is omitted |
+| `devin` (alias `devin.ai`) | **Devin** (Devin CLI) | Devin/Cognition backend (API key) | Requires the Devin runtimes to be deployed |
+
+```bash
+# identical request, different agent — same governance result
+python connect_persona.py --persona clinician                     # Claude (default)
+python connect_persona.py --persona clinician --agent devin.ai     # Devin
+```
+
+The chosen `(persona, agent)` runtime must already be deployed and warmed. Which
+agents get deployed is controlled by `AGENTS` in `config.env`
+(e.g. `AGENTS="claude-code devin"`).
+
+---
 
 ## 2. Warm Up (do before the audience is watching)
 
-First cold call to each persona can show partial tools. Warm all four:
+First cold call to each persona can show partial tools. Warm every deployed
+persona × agent with the helper script (handles cold-start retries automatically):
 
 ```bash
-python connect_persona.py --persona clinician --cmd "echo ready"
-python connect_persona.py --persona dev --cmd "echo ready"
-python connect_persona.py --persona auditor --cmd "echo ready"
-python connect_persona.py --persona public --cmd "echo ready"
+./warm-personas.sh                 # warm all personas for all enabled agents
+./warm-personas.sh --agent devin   # just the Devin runtimes
+```
+
+Or warm a single persona/agent manually:
+
+```bash
+python connect_persona.py --persona clinician --cmd "echo ready"                 # Claude
+python connect_persona.py --persona clinician --agent devin.ai --cmd "echo ready" # Devin
 ```
 
 ---
@@ -126,8 +164,11 @@ Omit `--prompt` to open a full interactive terminal (WebSocket Shell/PTY) into t
 agent's microVM and launch Claude Code. You type prompts live, just like a local CLI.
 
 ```bash
-# Log into the agent's terminal as a persona
+# Log into the agent's terminal as a persona (Claude Code by default)
 python connect_persona.py --persona clinician
+
+# ...or run the same persona with Devin instead
+python connect_persona.py --persona clinician --agent devin.ai
 ```
 
 Then type prompts directly at the Claude Code prompt, e.g.:
@@ -174,11 +215,31 @@ To prove the denial is deterministic policy enforcement (not model choice), the 
 
 ---
 
+## Verify governance (allow + deny matrix)
+
+Run the full matrix — for every enabled agent × persona, one prompt that should
+be **allowed** and one that should be **denied** — and print a PASS/FAIL table:
+
+```bash
+./verify-governance.sh                 # all enabled agents (Claude + Devin)
+./verify-governance.sh --agent devin   # just Devin
+./verify-governance.sh --persona dev   # just one persona
+```
+
+It warms the sessions in parallel and uses your `~/.aws/credentials` file (it
+clears any stale inherited `AWS_*` env vars first), so make sure the file has
+current creds via `aws configure set ...`.
+
+---
+
 ## Persona Reference
 
-| Persona | Runtime | Tools Available |
-|---------|---------|-----------------|
-| clinician | `claude_code_persona_clinician` | GitHub + Medical (PII visible) + Tavily — **Jira denied** |
-| dev | `claude_code_persona_dev` | GitHub + Jira + Tavily (no medical) |
-| auditor | `claude_code_persona_auditor` | Read-only across all; PII filtered |
-| public | `claude_code_persona_public` | Tavily web search only |
+Governance keys on the persona (the IAM role), so tool access is the same for
+both agents. Each persona has one runtime per deployed agent:
+
+| Persona | Runtimes (per agent) | Tools Available |
+|---------|----------------------|-----------------|
+| clinician | `claude_code_persona_clinician` / `devin_persona_clinician` | GitHub + Medical (PII visible) + Tavily — **Jira denied** |
+| dev | `claude_code_persona_dev` / `devin_persona_dev` | GitHub + Jira + Tavily (no medical) |
+| auditor | `claude_code_persona_auditor` / `devin_persona_auditor` | Read-only across all; PII filtered |
+| public | `claude_code_persona_public` / `devin_persona_public` | Tavily web search only |

@@ -41,11 +41,18 @@ delete_role() {
 }
 
 # --- Personas: runtimes + roles ---------------------------------------------
+# Delete every persona x agent runtime recorded in state (any agent, including
+# ones no longer listed in AGENTS), plus the legacy per-persona key. The persona
+# IAM role is shared across agents, so delete it once per persona.
 section "Personas"
 for persona in "${PERSONAS[@]}"; do
-  rid="$(state_get "persona_runtime_${persona}_id")"
-  [[ -n "$rid" ]] && aws bedrock-agentcore-control delete-agent-runtime --agent-runtime-id "$rid" $R >/dev/null 2>&1 \
-    && ok "deleted runtime ${persona} ($rid)" || true
+  for rid in $(jq -r --arg p "persona_runtime_${persona}_" \
+        'to_entries[] | select((.key|startswith($p)) and (.key|endswith("_id"))) | .value' \
+        "$STATE_FILE" 2>/dev/null); do
+    [[ -n "$rid" && "$rid" != "null" ]] || continue
+    aws bedrock-agentcore-control delete-agent-runtime --agent-runtime-id "$rid" $R >/dev/null 2>&1 \
+      && ok "deleted runtime ${persona} ($rid)" || true
+  done
   delete_role "${PERSONA_ROLE_PREFIX}${persona}"
 done
 
@@ -91,29 +98,45 @@ for key in clinician_guardrail_id restrictive_guardrail_id; do
 done
 
 # --- MCP server runtimes + roles + ECR --------------------------------------
+# (macOS bash 3.2 has no associative arrays, so use "key:role:repo" tuples.)
 section "MCP server runtimes"
-declare -A MCP=( [github_runtime_id]="agentcore-github-mcp-role:${GITHUB_ECR_REPO}"
-                 [jira_runtime_id]="agentcore-jira-mock-role:${JIRA_ECR_REPO}"
-                 [medical_runtime_id]="agentcore-dynamodb-mcp-role:${MEDICAL_ECR_REPO}" )
-for key in "${!MCP[@]}"; do
+mcp_specs=(
+  "github_runtime_id:agentcore-github-mcp-role:${GITHUB_ECR_REPO}"
+  "jira_runtime_id:agentcore-jira-mock-role:${JIRA_ECR_REPO}"
+  "medical_runtime_id:agentcore-dynamodb-mcp-role:${MEDICAL_ECR_REPO}"
+)
+for spec in "${mcp_specs[@]}"; do
+  key="${spec%%:*}"; rest="${spec#*:}"; role="${rest%%:*}"; repo="${rest##*:}"
   rid="$(state_get "$key")"
-  role="${MCP[$key]%%:*}"; repo="${MCP[$key]##*:}"
   [[ -n "$rid" ]] && aws bedrock-agentcore-control delete-agent-runtime --agent-runtime-id "$rid" $R >/dev/null 2>&1 \
     && ok "deleted runtime $rid" || true
   delete_role "$role"
   aws ecr delete-repository --repository-name "$repo" --force $R >/dev/null 2>&1 && ok "deleted ECR $repo" || true
 done
-aws ecr delete-repository --repository-name "${AGENT_ECR_REPO}" --force $R >/dev/null 2>&1 && ok "deleted ECR ${AGENT_ECR_REPO}" || true
+
+# All coding-agent images (one repo per agent: coding-agents-<slug>).
+section "Agent images (ECR)"
+for repo in $(aws ecr describe-repositories $R \
+      --query 'repositories[?starts_with(repositoryName, `coding-agents-`)].repositoryName' --output text 2>/dev/null); do
+  aws ecr delete-repository --repository-name "$repo" --force $R >/dev/null 2>&1 && ok "deleted ECR $repo" || true
+done
 
 # --- DynamoDB table ---------------------------------------------------------
 section "DynamoDB"
 aws dynamodb delete-table --table-name "${MEDICAL_TABLE_NAME}" $R >/dev/null 2>&1 \
   && ok "deleted table ${MEDICAL_TABLE_NAME}" || true
 
-# --- GitHub secret ----------------------------------------------------------
+# --- Secrets (GitHub + per-agent API keys) ----------------------------------
 section "Secrets Manager"
 aws secretsmanager delete-secret --secret-id "${GITHUB_SECRET_NAME}" --force-delete-without-recovery $R >/dev/null 2>&1 \
   && ok "deleted secret ${GITHUB_SECRET_NAME}" || true
+# Per-agent API-key secrets (best-effort for all known key-bearing agents).
+for aslug in devin cursor; do
+  sname="$(agent_secret_name "$aslug")"
+  [[ -n "$sname" ]] || continue
+  aws secretsmanager delete-secret --secret-id "$sname" --force-delete-without-recovery $R >/dev/null 2>&1 \
+    && ok "deleted secret $sname" || true
+done
 
 # --- Infra (CloudFormation) -------------------------------------------------
 section "Infrastructure"

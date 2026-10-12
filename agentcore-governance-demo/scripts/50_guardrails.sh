@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Create the two Bedrock Guardrails used by the response interceptor and publish
 # version 1 of each:
-#   clinician-guardrail   : blocks hate speech + political topics only (PII/medical allowed)
-#   restrictive-guardrail : also blocks medical diagnoses + PII (SSN/phone/email/address/...)
+#   clinician-guardrail   : blocks hate speech + political topics only (PII allowed through)
+#   restrictive-guardrail : blocks hate speech + political topics, and ANONYMIZES PII
+#                           (SSN/phone/email/address/... masked) so records still return
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/common.sh"
 
 section "Bedrock Guardrails"
@@ -16,7 +17,11 @@ TOPIC_MEDICAL='{"name":"MedicalDiagnoses","definition":"Specific medical diagnos
 
 CONTENT_FILTERS='[{"type":"VIOLENCE","inputStrength":"HIGH","outputStrength":"HIGH"},{"type":"HATE","inputStrength":"HIGH","outputStrength":"HIGH"},{"type":"SEXUAL","inputStrength":"HIGH","outputStrength":"HIGH"},{"type":"INSULTS","inputStrength":"MEDIUM","outputStrength":"MEDIUM"}]'
 
-PII_ENTITIES='[{"type":"US_SOCIAL_SECURITY_NUMBER","action":"BLOCK"},{"type":"PHONE","action":"BLOCK"},{"type":"EMAIL","action":"BLOCK"},{"type":"NAME","action":"ANONYMIZE"},{"type":"ADDRESS","action":"BLOCK"},{"type":"US_INDIVIDUAL_TAX_IDENTIFICATION_NUMBER","action":"BLOCK"},{"type":"CREDIT_DEBIT_CARD_NUMBER","action":"BLOCK"}]'
+# PII is ANONYMIZE (mask the value) rather than BLOCK: a BLOCK action blocks the
+# ENTIRE response when any such entity is present, whereas ANONYMIZE masks just
+# the entity and lets the rest of the record through. This is what lets the
+# auditor still see a patient record with the sensitive fields redacted.
+PII_ENTITIES='[{"type":"US_SOCIAL_SECURITY_NUMBER","action":"ANONYMIZE"},{"type":"PHONE","action":"ANONYMIZE"},{"type":"EMAIL","action":"ANONYMIZE"},{"type":"NAME","action":"ANONYMIZE"},{"type":"ADDRESS","action":"ANONYMIZE"},{"type":"US_INDIVIDUAL_TAX_IDENTIFICATION_NUMBER","action":"ANONYMIZE"},{"type":"CREDIT_DEBIT_CARD_NUMBER","action":"ANONYMIZE"}]'
 
 # ensure_guardrail NAME DESC TOPICS_JSON CONTENT_JSON PII_JSON_or_empty IN_MSG OUT_MSG STATE_ID_KEY STATE_VER_KEY
 ensure_guardrail() {
@@ -75,10 +80,10 @@ ensure_guardrail "${CLINICIAN_GUARDRAIL_NAME}" \
   clinician_guardrail_id clinician_guardrail_version
 
 ensure_guardrail "${RESTRICTIVE_GUARDRAIL_NAME}" \
-  "For non-clinician personas: blocks hate speech, political topics, PII, and medical diagnoses." \
-  "[$TOPIC_HATE,$TOPIC_POLITICS,$TOPIC_MEDICAL]" "$CONTENT_FILTERS" "$PII_ENTITIES" \
-  "This request was blocked. PII, medical diagnoses, hate speech, and political topics are not permitted for your role." \
-  "The response was blocked because it contained sensitive information (PII or medical diagnoses) or violated content policies. Contact an administrator for access." \
+  "For non-clinician personas: blocks hate speech and political topics, and ANONYMIZES PII so records are still returned with sensitive fields masked." \
+  "[$TOPIC_HATE,$TOPIC_POLITICS]" "$CONTENT_FILTERS" "$PII_ENTITIES" \
+  "This request was blocked. Hate speech and political topics are not permitted for your role." \
+  "The response was filtered — sensitive fields (PII) were redacted for your role. Hate speech and political topics are blocked." \
   restrictive_guardrail_id restrictive_guardrail_version
 
 ok "Guardrails ready"

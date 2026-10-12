@@ -16,6 +16,7 @@ source lib/common.sh
 STEPS=(
   00_preflight
   05_github_secret
+  07_agent_secrets
   10_infra
   20_dynamodb
   30_mcp_runtimes
@@ -42,10 +43,8 @@ Gateway URL : $(state_get gateway_url)
 Policy engine: $(state_get policy_engine_id)
 Personas    : clinician / dev / auditor / public
 
-Warm up each persona (first call loads the tool catalog):
-  for p in clinician dev auditor public; do
-    python connect_persona.py --persona \$p --cmd "echo ready"
-  done
+Warm up the personas (handles cold-start; all enabled agents):
+  ./warm-personas.sh
 
 Try the demo (see DEMO-CHEATSHEET in the parent project for the full script):
   python connect_persona.py --persona clinician --prompt "Pull up patient PAT-001's full chart including SSN and phone."

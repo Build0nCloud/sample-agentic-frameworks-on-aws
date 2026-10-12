@@ -9,6 +9,11 @@ Usage:
     python connect_persona.py --persona dev --prompt "List your MCP tools."
     python connect_persona.py --persona auditor --cmd "echo ready"
     python connect_persona.py --persona clinician --session <session-id>
+    python connect_persona.py --persona clinician --agent devin.ai --cmd "echo ready"
+
+The optional --agent flag selects which coding agent runtime to connect to
+(default: claude-code). The chosen (persona, agent) runtime must already be
+deployed — the flag selects among deployed runtimes, it does not create one.
 """
 
 import argparse
@@ -24,21 +29,74 @@ from bedrock_agentcore.runtime import AgentCoreRuntimeClient
 from bedrock_agentcore.runtime.shell import ShellChannel, ShellSession
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-STATE_FILE = os.path.join(PROJECT_ROOT, ".deployed-state.json")
+LEGACY_STATE_FILE = os.path.join(PROJECT_ROOT, ".deployed-state.json")
 PERSONAS = ["clinician", "dev", "auditor", "public"]
 
+# Default agent + aliases. Keep this in sync with agent_normalize_slug() in
+# lib/common.sh so the CLI and the deploy scripts agree on slugs.
+DEFAULT_AGENT = "claude-code"
+AGENT_ALIASES = {
+    "devin": "devin",
+    "devin.ai": "devin",
+    "devinai": "devin",
+    "claude": "claude-code",
+    "claude-code": "claude-code",
+    "claudecode": "claude-code",
+    "cursor": "cursor",
+    "cursor-cli": "cursor",
+    "cursor-agent": "cursor",
+}
 
-def load_state() -> dict:
-    if not os.path.exists(STATE_FILE):
-        sys.exit(f"State file not found: {STATE_FILE}. Deploy the demo first (./deploy-all.sh).")
-    with open(STATE_FILE) as f:
+
+def normalize_agent(raw: str) -> str:
+    key = (raw or DEFAULT_AGENT).strip().lower()
+    return AGENT_ALIASES.get(key, key)
+
+
+def resolve_account_id(region: str) -> str | None:
+    try:
+        import boto3
+        return boto3.client("sts", region_name=region).get_caller_identity()["Account"]
+    except Exception:
+        return None
+
+
+def state_file_path(region: str) -> str:
+    """Per-account state file (.deployed-state.<account>.json), matching the
+    deploy scripts. Falls back to the legacy single-file name."""
+    account = resolve_account_id(region)
+    if account:
+        per_account = os.path.join(PROJECT_ROOT, f".deployed-state.{account}.json")
+        if os.path.exists(per_account):
+            return per_account
+    return LEGACY_STATE_FILE
+
+
+def load_state(region: str) -> dict:
+    path = state_file_path(region)
+    if not os.path.exists(path):
+        sys.exit(f"State file not found: {path}. Deploy the demo first (./deploy-all.sh).")
+    with open(path) as f:
         return json.load(f)
 
 
-def persona_runtime_arn(state: dict, persona: str) -> str:
-    arn = state.get(f"persona_runtime_{persona}_arn")
+def persona_runtime_arn(state: dict, persona: str, agent: str) -> str:
+    # Agent-scoped key, e.g. persona_runtime_clinician_devin_arn
+    arn = state.get(f"persona_runtime_{persona}_{agent}_arn")
+    # Back-compat: older deployments stored claude-code without an agent suffix.
+    if not arn and agent == "claude-code":
+        arn = state.get(f"persona_runtime_{persona}_arn")
     if not arn:
-        sys.exit(f"No runtime ARN for persona '{persona}' in state. Run scripts/70_personas.sh.")
+        deployed = sorted({
+            k[len("persona_runtime_"):-len("_arn")]
+            for k in state
+            if k.startswith("persona_runtime_") and k.endswith("_arn")
+        })
+        hint = f" Deployed runtimes: {', '.join(deployed)}." if deployed else ""
+        sys.exit(
+            f"No runtime for persona '{persona}' with agent '{agent}'. "
+            f"Deploy it first (set AGENTS to include '{agent}' and run scripts/70_personas.sh).{hint}"
+        )
     return arn
 
 
@@ -93,22 +151,54 @@ async def stream_output(shell: ShellSession, initial_cmd: str):
 
 
 async def run(args):
-    state = load_state()
-    region = os.environ.get("AWS_REGION") or state.get("region") or "us-west-2"
+    region = os.environ.get("AWS_REGION") or "us-west-2"
+    state = load_state(region)
     persona = args.persona.lower()
-    runtime_arn = persona_runtime_arn(state, persona)
+    agent = normalize_agent(args.agent)
+    runtime_arn = persona_runtime_arn(state, persona, agent)
 
+    # Reuse the same session id across connect attempts so the first (cold) attempt
+    # triggers the microVM start and a later attempt lands on the warmed VM. Without
+    # --session, we still generate one id up front and keep it stable across retries.
     session_id = args.session or str(uuid.uuid4())
-    shell_id = str(uuid.uuid4())
     client = AgentCoreRuntimeClient(region=region)
 
-    print(f"Connecting as [{persona.upper()}]...")
+    print(f"Connecting as [{persona.upper()}] using agent [{agent}]...")
     print(f"  Runtime: {runtime_arn}")
     print(f"  Session: {session_id}\n")
 
     model_flag = f" --model {args.model}" if args.model else ""
 
-    async with client.open_shell(runtime_arn=runtime_arn, session_id=session_id, shell_id=shell_id) as shell:
+    # Cold VPC + S3-Files microVMs can take longer to boot than the WebSocket
+    # handshake timeout, so the first connect often times out. Retry the connect
+    # (new shell id each time, same session id) until the VM is warm.
+    shell_cm = None
+    shell = None
+    for attempt in range(1, args.connect_attempts + 1):
+        try:
+            shell_cm = client.open_shell(
+                runtime_arn=runtime_arn, session_id=session_id, shell_id=str(uuid.uuid4())
+            )
+            shell = await shell_cm.__aenter__()
+            break
+        except TimeoutError:
+            shell_cm = None
+            if attempt >= args.connect_attempts:
+                sys.exit(
+                    f"\nCould not connect after {args.connect_attempts} attempts (cold-start "
+                    f"handshake kept timing out). Try again, or pre-warm with "
+                    f"./warm-personas.sh --persona {persona} --agent {agent}."
+                )
+            print(f"  cold start — runtime still booting (attempt {attempt}/{args.connect_attempts}), retrying…")
+            await asyncio.sleep(args.connect_wait)
+        except Exception as e:  # noqa: BLE001 - surface auth/config errors immediately
+            msg = str(e)
+            if "403" in msg or "expired" in msg.lower():
+                sys.exit("\nConnection refused (HTTP 403). Your AWS credentials look expired — "
+                         "refresh ~/.aws/credentials and retry.")
+            raise
+
+    try:
         if args.prompt:
             safe_prompt = args.prompt.replace("'", "'\\''")
             cmd = f"/app/run.sh{model_flag} '{safe_prompt}'; exit\n"
@@ -117,20 +207,30 @@ async def run(args):
         elif args.cmd:
             await stream_output(shell, f"{args.cmd}; exit\n")
         else:
-            print(f"Connected as [{persona.upper()}]! Launching Claude Code...\n")
+            print(f"Connected as [{persona.upper()}]! Launching agent…\n")
             await interactive_pty(shell, f"/app/run.sh{model_flag}\n")
+    finally:
+        if shell_cm is not None:
+            await shell_cm.__aexit__(None, None, None)
 
-    print(f"\nTo reconnect: python connect_persona.py --persona {persona} --session {session_id}")
+    print(f"\nTo reconnect: python connect_persona.py --persona {persona} --agent {agent} --session {session_id}")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Connect to a Claude Code governance persona")
     parser.add_argument("--persona", required=True, choices=PERSONAS,
                         help="Persona to assume (determines tool access + guardrail behavior)")
+    parser.add_argument("--agent", default=DEFAULT_AGENT,
+                        help="Coding agent to connect to (default: claude-code). "
+                             "Accepts e.g. 'devin.ai'. The (persona, agent) runtime must be deployed.")
     parser.add_argument("--session", help="Reuse an existing session id")
     parser.add_argument("--prompt", help="Run a prompt in headless mode")
     parser.add_argument("--cmd", help="Run a raw shell command")
     parser.add_argument("--model", help="Model id override")
+    parser.add_argument("--connect-attempts", type=int, default=8,
+                        help="Connect retries for cold-start handshake timeouts (default: 8)")
+    parser.add_argument("--connect-wait", type=int, default=15,
+                        help="Seconds between connect retries (default: 15)")
     args = parser.parse_args()
     try:
         asyncio.run(run(args))

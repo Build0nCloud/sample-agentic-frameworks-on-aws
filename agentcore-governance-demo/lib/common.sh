@@ -19,7 +19,10 @@ set -euo pipefail
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${LIB_DIR}/.." && pwd)"
 export PROJECT_ROOT
-export STATE_FILE="${PROJECT_ROOT}/.deployed-state.json"
+# STATE_FILE is defined after the AWS account is resolved (below), so it is
+# scoped per account: .deployed-state.<account>.json. This lets one checkout
+# manage independent deployments in multiple accounts (e.g. a dev account and a
+# separate test account) without the two state files clobbering each other.
 
 # --- Load user config (config.env) -----------------------------------------
 # config.env is created by the user from config.env.example and is git-ignored.
@@ -40,6 +43,21 @@ resolve_account_id() {
   fi
 }
 resolve_account_id
+
+# --- Per-account state file -------------------------------------------------
+# One state file per account so a single checkout can drive independent
+# deployments (e.g. dev vs test accounts). Overridable via STATE_FILE env.
+export STATE_FILE="${STATE_FILE:-${PROJECT_ROOT}/.deployed-state.${AWS_ACCOUNT_ID}.json}"
+# Back-compat: adopt a legacy single-file state (.deployed-state.json) if it
+# exists, this account has no per-account file yet, and the legacy file's ARNs
+# belong to this account.
+_legacy_state="${PROJECT_ROOT}/.deployed-state.json"
+if [[ ! -f "$STATE_FILE" && -f "$_legacy_state" ]]; then
+  if grep -q "${AWS_ACCOUNT_ID}" "$_legacy_state" 2>/dev/null; then
+    mv "$_legacy_state" "$STATE_FILE"
+  fi
+fi
+unset _legacy_state
 
 # --- Stable resource names (override in config.env if desired) --------------
 # Target names and persona role names are referenced by Cedar action ids and by
@@ -90,6 +108,83 @@ export PERSONA_RUNTIME_IDLE_TIMEOUT="${PERSONA_RUNTIME_IDLE_TIMEOUT:-900}"
 export PERSONA_RUNTIME_MAX_LIFETIME="${PERSONA_RUNTIME_MAX_LIFETIME:-28800}"
 
 export AGENT_MODEL="${AGENT_MODEL:-us.anthropic.claude-opus-4-6-v1}"
+
+# --- Coding agent registry --------------------------------------------------
+# The demo can run different coding agents inside the persona runtimes. Each
+# agent is a self-contained container image under agents/<slug>/ that honors one
+# contract:
+#   * exposes /app/run.sh [--model X] '<prompt>'   (headless) and /app/run.sh (interactive)
+#   * reaches tools ONLY through the stdio MCP proxy (/mnt/s3files/mcp/index.js)
+#     pointed at $GATEWAY_URL
+# Because tool calls always flow through that proxy to the gateway, and Cedar +
+# guardrails key on the persona IAM role (not the agent), governance is identical
+# no matter which agent runs. Personas therefore share their 4 IAM roles across
+# agents; only the runtimes multiply (persona x agent).
+#
+# Enable agents with AGENTS in config.env, e.g. AGENTS="claude-code devin".
+# NOTE: macOS ships bash 3.2, which has no associative arrays and no ${v,,}
+# lowercasing — so agent metadata is provided by case-based helper functions.
+AGENTS_DEFAULT="claude-code"
+# shellcheck disable=SC2206
+AGENTS=(${AGENTS:-$AGENTS_DEFAULT})
+export AGENTS
+
+# Canonicalize a user-supplied agent name to a slug (lowercase + known aliases).
+agent_normalize_slug() {
+  local raw; raw="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  case "$raw" in
+    devin|devin.ai|devinai)        echo "devin" ;;
+    claude|claude-code|claudecode) echo "claude-code" ;;
+    cursor|cursor-cli|cursor-agent) echo "cursor" ;;   # reserved; not built yet
+    *)                             echo "$raw" ;;
+  esac
+}
+
+# ECR repo for an agent image (hyphens allowed in repo names).
+agent_ecr_repo() {
+  local slug; slug="$(agent_normalize_slug "$1")"
+  case "$slug" in
+    claude-code) echo "${AGENT_ECR_REPO:-coding-agents-claude-code}" ;;
+    *)           echo "coding-agents-${slug}" ;;
+  esac
+}
+
+# Build-context directory for an agent image.
+agent_build_dir() { echo "${PROJECT_ROOT}/agents/$(agent_normalize_slug "$1")"; }
+
+# AgentCore runtime name for a (persona, agent) pair. Runtime names use
+# underscores; claude-code keeps its historical name so existing runtimes are
+# reused (not duplicated) on redeploy.
+agent_runtime_name() {
+  local persona="$1" slug safe
+  slug="$(agent_normalize_slug "$2")"
+  safe="$(printf '%s' "$slug" | tr '-' '_')"
+  echo "${safe}_persona_${persona}"
+}
+
+# State key for a (persona, agent) runtime: agent_state_key <persona> <slug> <arn|id>
+agent_state_key() { echo "persona_runtime_$1_$(agent_normalize_slug "$2")_$3"; }
+
+# Secrets Manager secret holding an agent's API key ("" if the agent needs none,
+# e.g. claude-code uses Bedrock via the runtime IAM role).
+agent_secret_name() {
+  local slug; slug="$(agent_normalize_slug "$1")"
+  case "$slug" in
+    devin)  echo "${DEVIN_SECRET_NAME:-agentcore/agents/devin/api-key}" ;;
+    cursor) echo "${CURSOR_SECRET_NAME:-agentcore/agents/cursor/api-key}" ;;
+    *)      echo "" ;;
+  esac
+}
+
+# config.env variable name that seeds an agent's API key secret ("" if none).
+agent_key_env_var() {
+  local slug; slug="$(agent_normalize_slug "$1")"
+  case "$slug" in
+    devin)  echo "DEVIN_API_KEY" ;;
+    cursor) echo "CURSOR_API_KEY" ;;
+    *)      echo "" ;;
+  esac
+}
 
 # --- Derived values ---------------------------------------------------------
 export ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"

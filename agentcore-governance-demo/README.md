@@ -64,8 +64,9 @@ cp config.env.example config.env      # fill in TAVILY_API_KEY + GitHub App valu
 
 | # | Step | Creates |
 |---|------|---------|
-| 00 | preflight | tooling / credential / config checks |
+| 00 | preflight | tooling / credential / config checks (incl. enabled agents) |
 | 05 | github_secret | GitHub App secret in Secrets Manager |
+| 07 | agent_secrets | per-agent API keys in Secrets Manager (e.g. Devin) |
 | 10 | infra | S3 bucket, VPC + S3 Files (CloudFormation), MCP proxy upload |
 | 20 | dynamodb | `medical-records-demo` table + 7 seeded patients |
 | 30 | mcp_runtimes | GitHub / Jira / DynamoDB MCP server images + runtimes |
@@ -75,21 +76,39 @@ cp config.env.example config.env      # fill in TAVILY_API_KEY + GitHub App valu
 | 55 | interceptor | guardrail-routing Lambda + role |
 | 60 | policies | Cedar policy engine + 7 policies |
 | 65 | attach_gateway | wire policy engine (ENFORCE) + interceptor onto gateway |
-| 68 | agent_image | Claude Code agent container image |
-| 70 | personas | 4 persona IAM roles + 4 VPC persona runtimes |
+| 68 | agent_image | container image for each enabled agent (Claude Code, Devin, …) |
+| 70 | personas | 4 shared persona IAM roles + a VPC runtime per persona × agent |
 
 Re-running after a failure resumes from state; each step is safe to re-run.
+
+## Coding agents (pluggable)
+
+The agent that runs inside the persona runtimes is pluggable. Governance is
+enforced at the gateway on the persona's IAM identity, so the allow/deny outcome
+is identical regardless of which agent runs.
+
+- **Claude** (Claude Code) — `--agent claude-code` (default); inference via Amazon Bedrock.
+- **Devin** (Devin CLI) — `--agent devin` (alias `devin.ai`); inference via Devin's backend (needs `DEVIN_API_KEY`).
+
+Enable which agents get built/deployed with `AGENTS` in `config.env`
+(e.g. `AGENTS="claude-code devin"`). Each agent is a self-contained image under
+`agents/<slug>/` that honors one contract: expose `/app/run.sh` and reach tools
+only through the stdio MCP proxy. Adding another agent (e.g. Cursor) is a new
+`agents/<slug>/` directory plus a registry entry in `lib/common.sh` — no changes
+to the gateway, policies, or guardrails.
 
 ## Run the demo
 
 ```bash
-# Warm each persona once (loads the tool catalog):
-for p in clinician dev auditor public; do
-  python connect_persona.py --persona $p --cmd "echo ready"
-done
+# Warm every deployed persona x agent (handles cold-start):
+./warm-personas.sh
 
-# Clinician sees full PII:
+# Clinician sees full PII (default agent = Claude Code):
 python connect_persona.py --persona clinician \
+  --prompt "Pull up patient PAT-001's full chart including SSN and phone."
+
+# Same persona, run with Devin instead — same governance result:
+python connect_persona.py --persona clinician --agent devin.ai \
   --prompt "Pull up patient PAT-001's full chart including SSN and phone."
 
 # Dev has no medical tool at all (Cedar hides it):
@@ -100,9 +119,12 @@ python connect_persona.py --persona auditor --prompt "Get patient PAT-001."
 
 # Public only has web search:
 python connect_persona.py --persona public --prompt "Search the web for AWS AgentCore pricing."
+
+# Verify the whole allow/deny matrix (all enabled agents x personas):
+./verify-governance.sh
 ```
 
-Interactive terminal (PTY) into a persona's Claude Code:
+Interactive terminal (PTY) into a persona's agent (add `--agent devin.ai` for Devin):
 
 ```bash
 python connect_persona.py --persona clinician
@@ -122,21 +144,24 @@ governance-demo/
 ├── config.env.example        # your parameters (copy to config.env)
 ├── deploy-all.sh             # orchestrator
 ├── cleanup-all.sh            # teardown
-├── connect_persona.py        # client (reads .deployed-state.json)
-├── lib/common.sh             # config, naming, state helpers
+├── warm-personas.sh          # warm persona×agent runtimes (cold-start handling)
+├── verify-governance.sh      # allow/deny matrix across agents × personas
+├── connect_persona.py        # client (--persona, --agent; reads per-account state)
+├── lib/common.sh             # config, naming, state helpers, agent registry
 ├── infra/cfn-vpc.yaml        # VPC + S3 Files
 ├── mcp-proxy/                # stdio↔gateway SigV4 proxy (mounted via S3 Files)
 ├── mcp-servers/{github,jira-mock,dynamodb}/   # the 3 self-hosted MCP servers
 ├── interceptor/guardrails_interceptor.py      # per-persona guardrail routing
-├── agent/                    # Claude Code container (shared by all personas)
+├── agents/<slug>/            # one dir per coding agent (claude-code, devin, …)
 └── scripts/                  # numbered deploy steps
 ```
 
 ## Notes
 
-- **Cost / blast radius:** this creates a NAT gateway, VPC, S3 Files, 7 AgentCore
-  runtimes, ECR repos, a DynamoDB table, guardrails, and a Lambda. Run
-  `./cleanup-all.sh` when finished.
+- **Cost / blast radius:** this creates a NAT gateway, VPC, S3 Files, ECR repos,
+  a DynamoDB table, guardrails, a Lambda, and AgentCore runtimes — 3 MCP servers
+  plus one persona runtime per persona × enabled agent (e.g. 8 with Claude + Devin).
+  Run `./cleanup-all.sh` when finished.
 - **Secrets:** `config.env`, `.deployed-state.json`, and `*.pem` are git-ignored.
   The Tavily key is embedded in the `TavilyWebSearch` target endpoint (as in the
   original demo); treat the deployed target config as sensitive.
